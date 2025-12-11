@@ -134,6 +134,9 @@ def process_quiz_generation(job_id: int, course_id: int, week: str, student_id: 
         combined_text = ""
         material_count = 0
         
+        MIN_FILE_CHARS = 20   # accept very short text per file
+        MIN_TOTAL_CHARS = 50  # allow tiny combined content
+        
         for material in materials:
             try:
                 filepath = Path(material.filepath)
@@ -141,14 +144,21 @@ def process_quiz_generation(job_id: int, course_id: int, week: str, student_id: 
                     filepath = config.STORAGE_ROOT / filepath
                 
                 text = extract_text_from_file(filepath)
-                if text and len(text.strip()) >= 100:
+                if text and len(text.strip()) >= MIN_FILE_CHARS:
                     combined_text += f"\n\n=== From {material.filename} ===\n\n{text}"
                     material_count += 1
+                else:
+                    # Use description and filename as fallback context
+                    fallback_bits = []
+                    if material.description:
+                        fallback_bits.append(material.description)
+                    fallback_bits.append(f"Title: {material.filename}")
+                    combined_text += f"\n\n=== From {material.filename} (fallback) ===\n\n" + "\n".join(fallback_bits)
             except Exception as e:
                 print(f"⚠️ Failed to extract text from {material.filename}: {e}")
         
-        if not combined_text or len(combined_text.strip()) < 100:
-            raise ValueError("Could not extract sufficient text from materials")
+        if not combined_text or len(combined_text.strip()) < MIN_TOTAL_CHARS:
+            raise ValueError("Could not extract sufficient text from materials (need more content in files or descriptions)")
         
         # Truncate text if too long
         combined_text = truncate_text_smart(combined_text, max_length=12000)

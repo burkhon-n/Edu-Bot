@@ -301,13 +301,33 @@ def update_course(db: Session, course_id: int, name: str = None, year: str = Non
 
 
 def delete_course(db: Session, course_id: int) -> bool:
-    """Delete course and all related data."""
+    """Delete course and related data safely.
+    - Null out professor.course_id references
+    - Delete quizzes for the course
+    - Delete materials (and their files)
+    - Finally delete the course
+    """
     course = get_course_by_id(db, course_id)
-    if course:
-        db.delete(course)
-        db.commit()
-        return True
-    return False
+    if not course:
+        return False
+    
+    # Unassign professors
+    professors = db.query(models.Professor).filter(models.Professor.course_id == course_id).all()
+    for prof in professors:
+        prof.course_id = None
+    
+    # Delete quizzes for this course
+    db.query(models.Quiz).filter(models.Quiz.course_id == course_id).delete()
+    
+    # Delete materials (also removes files)
+    materials = get_materials_by_course(db, course_id)
+    for mat in materials:
+        delete_material(db, mat.id)
+    
+    # Delete course
+    db.delete(course)
+    db.commit()
+    return True
 
 
 def get_courses_by_filters(db: Session, university_id: Optional[int] = None, 

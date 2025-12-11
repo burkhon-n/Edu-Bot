@@ -278,58 +278,38 @@ def handle_student_university(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('stu_maj_'))
 def handle_student_major(call):
     """Handle student major selection."""
-    telegram_id = str(call.from_user.id)
-    db = SessionLocal()
-    
-    try:
-        session = get_session(call.from_user.id)
-        prof_id = session.get("data", {}).get("professor_id")
-        professor = None
-        
-        # Prefer professor from session; fall back to telegram lookup for backward compatibility
-        if prof_id:
-            professor = crud.get_professor_by_id(db, prof_id)
-        if not professor:
-            professor = crud.get_professor_by_telegram_id(db, telegram_id)
-            # If found, cache id in session for later callbacks
-            if professor:
-                session.setdefault("data", {})["professor_id"] = professor.id
-        
-        # If still not found or no course assigned, block with a clear message
-        if not professor or not professor.course_id:
-            bot.answer_callback_query(call.id, "❌ You are not assigned to any course yet!")
-            bot.edit_message_text(
-                "❌ You are not assigned to a course.\n\nPlease contact an admin to assign you to a course.",
-                call.message.chat.id,
-                call.message.message_id
-            )
-            return
-        
-        # Keep telegram_id in sync if missing
-        if not professor.telegram_id:
-            crud.link_professor_telegram(db, professor.id, telegram_id)
-        
-        course = crud.get_course_by_id(db, professor.course_id)
-        
-        session.setdefault("data", {})["prof_course_id"] = course.id
-        session["state"] = "prof_upload_week"
-        
-        bot.edit_message_text(
-            f"📤 Upload Material\n\n"
-            f"📚 Course: {course.name}\n"
-            f"🏛 University: {course.university.name}\n"
-            f"📖 Major: {course.major.name}\n"
-            f"📅 Year: {course.year}\n\n"
-            f"Enter Week number (1-16):",
-            call.message.chat.id,
-            call.message.message_id
-        )
-    
-    finally:
-        db.close()
+    major_id = int(call.data.split('_')[2])
+    session = get_session(call.from_user.id)
+    session.setdefault("data", {})["major_id"] = major_id
+    session["state"] = "student_year"
+
+    # Ask for year selection
+    markup = types.InlineKeyboardMarkup()
+    for year in ['1', '2', '3', '4']:
+        markup.row(types.InlineKeyboardButton(f"Year {year}", callback_data=f"stu_year_{year}"))
+
+    bot.edit_message_text(
+        "📅 Select your Year:",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('stu_year_'))
+def handle_student_year(call):
+    """Handle student year selection and move to name entry."""
+    year = call.data.split('_')[2]
+    session = get_session(call.from_user.id)
+    session.setdefault("data", {})["year"] = year
+    session["state"] = "student_name"
+
+    bot.edit_message_text(
+        "✏️ Enter your full name (First and Last name):",
         call.message.chat.id,
         call.message.message_id
-        
+    )
     bot.answer_callback_query(call.id)
 
 
@@ -1128,7 +1108,17 @@ def handle_prof_upload(call):
     db = SessionLocal()
     
     try:
-        professor = crud.get_professor_by_telegram_id(db, telegram_id)
+        session = get_session(call.from_user.id)
+        prof_id = session.get("data", {}).get("professor_id")
+        professor = None
+        
+        # Prefer professor cached from code login; fallback to telegram lookup
+        if prof_id:
+            professor = crud.get_professor_by_id(db, prof_id)
+        if not professor:
+            professor = crud.get_professor_by_telegram_id(db, telegram_id)
+            if professor:
+                session.setdefault("data", {})["professor_id"] = professor.id
         
         if not professor or not professor.course_id:
             bot.answer_callback_query(call.id, "❌ You are not assigned to any course yet!")
@@ -1139,10 +1129,13 @@ def handle_prof_upload(call):
             )
             return
         
+        # Sync telegram_id if missing
+        if not professor.telegram_id:
+            crud.link_professor_telegram(db, professor.id, telegram_id)
+        
         course = crud.get_course_by_id(db, professor.course_id)
         
-        session = get_session(call.from_user.id)
-        session["data"]["prof_course_id"] = course.id
+        session.setdefault("data", {})["prof_course_id"] = course.id
         session["state"] = "prof_upload_week"
         
         bot.edit_message_text(

@@ -59,8 +59,8 @@ async def upload_material(
     Upload course material.
     
     Professor authentication via professor_code.
-    Creates course if doesn't exist.
-    Triggers background quiz generation.
+    Creates university/major/course by name if missing.
+    DOES NOT generate quizzes here (on-demand per student).
     """
     # Validate professor
     professor = crud.get_professor_by_code(db, professor_code)
@@ -74,8 +74,12 @@ async def upload_material(
             detail=f"Upload limit reached ({config.PROF_RATE_LIMIT_PER_DAY} per day)"
         )
     
-    # Get or create course
-    course_obj = crud.get_or_create_course(db, university, major, year, course)
+    # Resolve or create university/major by name
+    uni_obj = crud.get_university_by_name(db, university) or crud.create_university(db, university)
+    major_obj = crud.get_major_by_name(db, uni_obj.id, major) or crud.create_major(db, uni_obj.id, major)
+    
+    # Get or create course (uses IDs)
+    course_obj = crud.get_or_create_course(db, uni_obj.id, major_obj.id, year, course)
     
     # Read file content
     file_content = await file.read()
@@ -101,16 +105,12 @@ async def upload_material(
     # Increment rate limit
     crud.increment_rate_limit(db, professor.id, 'upload')
     
-    # Submit quiz generation task
-    job_id = submit_quiz_generation_task(material.id, professor.id, difficulty='medium')
-    
     return {
         "material_id": material.id,
         "filename": material.filename,
         "course": course_obj.name,
         "week": week,
-        "job_id": job_id,
-        "message": "Material uploaded successfully. Quiz generation started."
+        "message": "Material uploaded successfully. Quizzes are generated on-demand by students."
     }
 
 
@@ -143,9 +143,8 @@ async def download_material(
         # Check if student
         student = crud.get_student_by_telegram_id(db, telegram_id)
         if student and student.verified:
-            # Check if student's major/year matches course
             course = crud.get_course_by_id(db, material.course_id)
-            if course and course.major == student.major and course.year == student.year:
+            if course and course.major_id == student.db_major_id and course.university_id == student.db_university_id and course.year == student.year:
                 authorized = True
         
         # Check if admin
@@ -183,15 +182,29 @@ async def list_courses(
     db: Session = Depends(get_db)
 ):
     """List courses with optional filters."""
-    courses = crud.get_courses_by_filters(db, university, major, year)
+    uni_id = None
+    maj_id = None
+    
+    if university:
+        uni_obj = crud.get_university_by_name(db, university)
+        if not uni_obj:
+            return {"count": 0, "courses": []}
+        uni_id = uni_obj.id
+    if major and uni_id:
+        maj_obj = crud.get_major_by_name(db, uni_id, major)
+        if not maj_obj:
+            return {"count": 0, "courses": []}
+        maj_id = maj_obj.id
+    
+    courses = crud.get_courses_by_filters(db, university_id=uni_id, major_id=maj_id, year=year)
     
     return {
         "count": len(courses),
         "courses": [
             {
                 "id": c.id,
-                "university": c.university,
-                "major": c.major,
+                "university": c.university.name,
+                "major": c.major.name,
                 "year": c.year,
                 "name": c.name
             }
