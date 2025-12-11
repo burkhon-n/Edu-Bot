@@ -278,43 +278,58 @@ def handle_student_university(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('stu_maj_'))
 def handle_student_major(call):
     """Handle student major selection."""
-    major_id = int(call.data.split('_')[2])
+    telegram_id = str(call.from_user.id)
+    db = SessionLocal()
     
-    session = get_session(call.from_user.id)
-    session["data"]["major_id"] = major_id
-    session["state"] = "student_year"
+    try:
+        session = get_session(call.from_user.id)
+        prof_id = session.get("data", {}).get("professor_id")
+        professor = None
+        
+        # Prefer professor from session; fall back to telegram lookup for backward compatibility
+        if prof_id:
+            professor = crud.get_professor_by_id(db, prof_id)
+        if not professor:
+            professor = crud.get_professor_by_telegram_id(db, telegram_id)
+            # If found, cache id in session for later callbacks
+            if professor:
+                session.setdefault("data", {})["professor_id"] = professor.id
+        
+        # If still not found or no course assigned, block with a clear message
+        if not professor or not professor.course_id:
+            bot.answer_callback_query(call.id, "❌ You are not assigned to any course yet!")
+            bot.edit_message_text(
+                "❌ You are not assigned to a course.\n\nPlease contact an admin to assign you to a course.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+            return
+        
+        # Keep telegram_id in sync if missing
+        if not professor.telegram_id:
+            crud.link_professor_telegram(db, professor.id, telegram_id)
+        
+        course = crud.get_course_by_id(db, professor.course_id)
+        
+        session.setdefault("data", {})["prof_course_id"] = course.id
+        session["state"] = "prof_upload_week"
+        
+        bot.edit_message_text(
+            f"📤 Upload Material\n\n"
+            f"📚 Course: {course.name}\n"
+            f"🏛 University: {course.university.name}\n"
+            f"📖 Major: {course.major.name}\n"
+            f"📅 Year: {course.year}\n\n"
+            f"Enter Week number (1-16):",
+            call.message.chat.id,
+            call.message.message_id
+        )
     
-    markup = types.InlineKeyboardMarkup()
-    markup.row(
-        types.InlineKeyboardButton("1", callback_data="stu_year_1"),
-        types.InlineKeyboardButton("2", callback_data="stu_year_2"),
-        types.InlineKeyboardButton("3", callback_data="stu_year_3"),
-        types.InlineKeyboardButton("4", callback_data="stu_year_4")
-    )
-    
-    bot.edit_message_text(
-        "📅 Select your Year:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup
-    )
-    bot.answer_callback_query(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('stu_year_'))
-def handle_student_year(call):
-    """Handle student year selection."""
-    year = call.data.split('_')[2]
-    
-    session = get_session(call.from_user.id)
-    session["data"]["year"] = year
-    session["state"] = "student_name"
-    
-    bot.edit_message_text(
-        "👤 Please enter your full name (First and Last name):",
+    finally:
+        db.close()
         call.message.chat.id,
         call.message.message_id
-    )
+        
     bot.answer_callback_query(call.id)
 
 
